@@ -278,6 +278,3 @@ No primeiro acesso (`http://localhost:3000`), configure a conexao:
 - [Redis](https://redis.io/) 7.2
 - [python-dotenv](https://saurabh-kumar.com/python-dotenv/)
 
-## Licenca
-
-Este projeto esta licenciado sob a licenca MIT.
