@@ -3,22 +3,36 @@
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.engine import Engine
 
 from utils.db import get_sqlalchemy_engine
 from utils.logger import get_logger
 
+try:
+    from airflow.providers.postgres.hooks.postgres import PostgresHook
+except ImportError:
+    PostgresHook = None  # type: ignore[misc,assignment]
+
 logger = get_logger(__name__)
 
 
+def _get_engine(postgres_conn_id: str | None = None) -> Engine:
+    """Retorna uma engine SQLAlchemy: via PostgresHook (Airflow) ou fallback local."""
+    if postgres_conn_id and PostgresHook is not None:
+        hook = PostgresHook(postgres_conn_id=postgres_conn_id)
+        return hook.get_sqlalchemy_engine()
+    return get_sqlalchemy_engine()
+
+
 def _get_lookups(conn) -> tuple[dict, dict, dict]:
-    """Obtém mapeamentos de nome -> id para races, drivers e constructors."""
-    race_rows = conn.execute(text("SELECT race_name, race_id FROM races")).mappings().all()
+    """Obtém mapeamentos de nome -> id para races, drivers e constructors;"""
+    race_rows = conn.execute(text("SELECT race_name, race_id FROM races;")).mappings().all()
     races = {row["race_name"]: row["race_id"] for row in race_rows}
 
-    driver_rows = conn.execute(text("SELECT name, driver_id FROM drivers")).mappings().all()
+    driver_rows = conn.execute(text("SELECT name, driver_id FROM drivers;")).mappings().all()
     drivers = {row["name"]: row["driver_id"] for row in driver_rows}
 
-    constructor_rows = conn.execute(text("SELECT name, constructor_id FROM constructors")).mappings().all()
+    constructor_rows = conn.execute(text("SELECT name, constructor_id FROM constructors;")).mappings().all()
     constructors = {row["name"]: row["constructor_id"] for row in constructor_rows}
 
     return races, drivers, constructors
@@ -29,20 +43,22 @@ def load_to_db(
     table_name: str,
     conflict_columns: list[str] | None = None,
     update_columns: list[str] | None = None,
+    postgres_conn_id: str | None = None,
 ) -> int:
     """
-    Carrega um DataFrame para uma tabela PostgreSQL via SQLAlchemy Core (bulk).
+    Carrega um DataFrame para uma tabela PostgreSQL via SQLAlchemy Core (bulk);
 
     Args:
         df: DataFrame com os dados normalizados.
         table_name: Nome da tabela de destino.
         conflict_columns: Colunas para cláusula ON CONFLICT (idempotência).
         update_columns: Colunas para UPDATE em caso de conflito.
+        postgres_conn_id: Conn ID do Airflow (ex: 'postgres_f1'). Se None, usa engine local.
 
     Returns:
         Número de registros enviados para carga.
     """
-    engine = get_sqlalchemy_engine()
+    engine = _get_engine(postgres_conn_id)
     columns = list(df.columns)
     column_names = ", ".join(columns)
     placeholders = ", ".join([f":{col}" for col in columns])
@@ -52,29 +68,31 @@ def load_to_db(
     if conflict_columns and update_columns:
         conflict = ", ".join(conflict_columns)
         updates = ", ".join([f"{col} = EXCLUDED.{col}" for col in update_columns])
-        query += f" ON CONFLICT ({conflict}) DO UPDATE SET {updates}"
+        query += f" ON CONFLICT ({conflict}) DO UPDATE SET {updates};"
     elif conflict_columns:
         conflict = ", ".join(conflict_columns)
-        query += f" ON CONFLICT ({conflict}) DO NOTHING"
+        query += f" ON CONFLICT ({conflict}) DO NOTHING;"
+    else:
+        query += ";"
 
     records = df.to_dict(orient="records")
 
     try:
         with engine.begin() as conn:
             conn.execute(text(query), records)
-        logger.info("Carga finalizada: %s registros em '%s'.", len(records), table_name)
+        logger.info("Carga finalizada: %s registros em '%s';", len(records), table_name)
         return len(records)
     except SQLAlchemyError as e:
-        logger.error("Erro ao carregar dados em '%s': %s", table_name, e)
+        logger.error("Erro ao carregar dados em '%s': %s;", table_name, e)
         raise
 
 
-def load_results(df: pd.DataFrame) -> int:
+def load_results(df: pd.DataFrame, postgres_conn_id: str | None = None) -> int:
     """
     Carga específica para a tabela results, que necessita de lookups
-    de chaves estrangeiras antes da inserção.
+    de chaves estrangeiras antes da inserção;
     """
-    engine = get_sqlalchemy_engine()
+    engine = _get_engine(postgres_conn_id)
 
     try:
         with engine.begin() as conn:
@@ -105,13 +123,13 @@ def load_results(df: pd.DataFrame) -> int:
                     })
                 else:
                     logger.warning(
-                        "Lookup falhou para: race=%s, driver=%s, constructor=%s",
+                        "Lookup falhou para: race=%s, driver=%s, constructor=%s;",
                         row["race_name"], row["driver_name"], row["constructor_name"],
                     )
 
             conn.execute(insert_query, records)
-            logger.info("Carga de results finalizada: %s registros.", len(records))
+            logger.info("Carga de results finalizada: %s registros;", len(records))
             return len(records)
     except SQLAlchemyError as e:
-        logger.error("Erro na carga de results: %s", e)
+        logger.error("Erro na carga de results: %s;", e)
         raise
