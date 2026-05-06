@@ -76,6 +76,7 @@ f1-pipeline/
 
 - [Docker](https://www.docker.com/) e Docker Compose v2+
 - Python >= 3.12 (para execucao local fora do Docker)
+- Ubuntu (via WSL2 ou nativo) — todo o desenvolvimento e manuseio do projeto foi realizado pelo terminal
 - WSL2 (recomendado para Windows)
 
 ## Infraestrutura (Docker Compose)
