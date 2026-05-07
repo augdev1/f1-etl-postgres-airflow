@@ -87,14 +87,32 @@ def get_data_from_api(entity: str, year: int, limit: int = 1000) -> list[dict]:
                     )
                     continue
 
-                all_races_with_results.append(race_detail)
+                results_list = race_detail["Results"]
+                if not results_list:
+                    logger.warning(
+                        "Rodada %s ('%s') retornou lista de resultados vazia.",
+                        round_number,
+                        race_name,
+                    )
+                    continue
+
+                for driver_result in results_list:
+                    record = {
+                        "season": race_detail.get("season"),
+                        "round": race_detail.get("round"),
+                        "raceName": race_detail.get("raceName"),
+                        "date": race_detail.get("date"),
+                        "Results": driver_result,
+                    }
+                    all_races_with_results.append(record)
             except Exception:
                 # Erros já logados pelo _fetch; segue para próxima rodada
                 continue
 
         logger.info(
-            "Grid completo extraido: %s corridas com resultados.",
+            "Grid completo extraido: %s registros (pilotos) de %s corridas.",
             len(all_races_with_results),
+            len(races_list),
         )
         return all_races_with_results
 
