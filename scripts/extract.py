@@ -1,5 +1,7 @@
 """Camada de extração de dados da API Ergast (Jolpi mirror)."""
 
+import time
+
 import requests
 
 from config.settings import API_BASE_URL, API_TIMEOUT
@@ -9,17 +11,31 @@ logger = get_logger(__name__)
 
 
 def _fetch(endpoint: str) -> dict:
-    """Faz uma requisição GET à API e retorna o JSON validado."""
+    """Faz uma requisição GET à API com retry automático e retorna o JSON validado."""
     url = f"{API_BASE_URL}{endpoint}"
     logger.info("Requisitando URL: %s", url)
 
-    try:
-        response = requests.get(url, timeout=API_TIMEOUT)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logger.error("Erro na requisição para %s: %s", url, e)
-        raise
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.get(url, timeout=API_TIMEOUT)
+            response.raise_for_status()
+            return response.json()
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            logger.warning(
+                "Tentativa %s/%s falhou para %s: %s",
+                attempt,
+                max_attempts,
+                url,
+                e,
+            )
+            if attempt == max_attempts:
+                logger.error("Maximo de tentativas excedido para %s", url)
+                raise
+            time.sleep(2)
+        except requests.exceptions.RequestException as e:
+            logger.error("Erro irrecuperavel na requisicao para %s: %s", url, e)
+            raise
 
 
 def get_data_from_api(entity: str, year: int, limit: int = 1000) -> list[dict]:
@@ -34,11 +50,58 @@ def get_data_from_api(entity: str, year: int, limit: int = 1000) -> list[dict]:
     Returns:
         Lista de dicionários com os dados brutos da API.
     """
+    if entity == "results":
+        # Grid completo: itera sobre cada rodada para extrair todos os pilotos
+        schedule_data = _fetch(f"/{year}.json")
+        races_list = schedule_data["MRData"]["RaceTable"]["Races"]
+
+        all_races_with_results = []
+        for race in races_list:
+            round_number = race.get("round")
+            race_name = race.get("raceName", "Desconhecida")
+            if not round_number:
+                logger.warning(
+                    "Corrida '%s' sem numero de rodada; pulando.",
+                    race_name,
+                )
+                continue
+
+            try:
+                round_data = _fetch(f"/{year}/{round_number}/results.json")
+                round_races = round_data["MRData"]["RaceTable"]["Races"]
+                if not round_races:
+                    logger.warning(
+                        "Rodada %s ('%s') retornou vazio.",
+                        round_number,
+                        race_name,
+                    )
+                    continue
+
+                race_detail = round_races[0]
+                if "Results" not in race_detail:
+                    logger.warning(
+                        "Rodada %s ('%s') retornou dados malformados "
+                        "(campo 'Results' ausente); pulando.",
+                        round_number,
+                        race_name,
+                    )
+                    continue
+
+                all_races_with_results.append(race_detail)
+            except Exception:
+                # Erros já logados pelo _fetch; segue para próxima rodada
+                continue
+
+        logger.info(
+            "Grid completo extraido: %s corridas com resultados.",
+            len(all_races_with_results),
+        )
+        return all_races_with_results
+
     endpoints = {
         "races": f"/{year}.json",
         "drivers": f"/{year}/drivers.json",
         "constructors": f"/{year}/constructors.json",
-        "results": f"/{year}/results.json?limit={limit}",
     }
 
     if entity not in endpoints:
@@ -46,9 +109,6 @@ def get_data_from_api(entity: str, year: int, limit: int = 1000) -> list[dict]:
 
     data = _fetch(endpoints[entity])
 
-    # Navegação no JSON varia conforme a entidade
-    if entity == "results":
-        return data["MRData"]["RaceTable"]["Races"]
     if entity == "races":
         return data["MRData"]["RaceTable"]["Races"]
     if entity == "drivers":
